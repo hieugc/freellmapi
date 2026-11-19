@@ -304,6 +304,8 @@ To edit files on your computer, open the Playground settings rail and use **Clau
 
 A selected folder supplies its root listing to the model. For task questions, the Playground also looks for task lists at the root and under `specs/*/tasks.md` and sends bounded excerpts with line numbers. The reply lists paths read (📖) and paths saved (✓). Web search starts off for each selection and can be enabled for that workspace in the composer.
 
+Use `/next-task` in the composer to look up the first unchecked Markdown item in each discovered checklist, with its actual file and line number. The lookup runs locally, even when model providers are unavailable. It checks conventional root task files, `specs/*/tasks.md`, Spec Kit checklists and `docs/tasks/*.md`. To target one file, enter `/next-task docs/tasks/README.md`. With no workspace selected, the composer keeps the question and prompts for a file or folder.
+
 The Playground implements the Claude text editor commands `view`, `str_replace`, `insert`, and `create` for UTF-8 files up to 128 KB. It uses the existing chat gateway with an explicit tool schema. Docker needs no host-directory mount or Claude Code CLI installation for this feature.
 
 ![Playground page](repo-assets/playground.png)

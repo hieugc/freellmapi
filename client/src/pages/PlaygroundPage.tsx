@@ -30,6 +30,7 @@ import {
 } from '@/lib/attachments'
 import { useWorkspaceEditor, WorkspaceControls, EditReview } from '@/components/playground/workspace-editor'
 import { EditDeclined, executeEditor } from '@/lib/workspace-editor'
+import { lookupNextTask, nextTaskRequest } from '@/lib/workspace-next-task'
 import { readWorkspaceContext } from '@/lib/workspace-context'
 import { workspaceCompletion } from '@/lib/workspace-chat'
 import { readChatStream } from '@/lib/playground-stream'
@@ -249,7 +250,8 @@ function systemDictationHintKey(models: TranscriptionModelRow[] | undefined) {
 
 export default function PlaygroundPage() {
   const editor = useWorkspaceEditor()
-  const { t } = useI18n()
+  const [showTaskPicker, setShowTaskPicker] = useState(false)
+  const { t, locale } = useI18n()
   const [messages, setMessages] = useState<ChatMessage[]>([])
   // Optional system prompt for this Playground session. Client-side only:
   // when set, it's prepended as a `system` message to the request. Persisted
@@ -280,6 +282,7 @@ export default function PlaygroundPage() {
   const [workspaceSearch, setWorkspaceSearch] = useState(false)
   const selectWorkspace = (workspace: typeof editor.workspace) => {
     setWorkspaceSearch(false)
+    setShowTaskPicker(false)
     editor.setWorkspace(workspace)
   }
   const searchRequested = editor.workspace ? workspaceSearch : webSearch
@@ -842,6 +845,12 @@ export default function PlaygroundPage() {
     const text = input.trim()
     if ((!text && attachments.length === 0) || loading) return
 
+    const taskLookup = attachments.length ? null : nextTaskRequest(text, locale)
+    if (taskLookup && !editor.workspace) {
+      setShowTaskPicker(true)
+      return
+    }
+
     // Text-like files are inlined into the prompt; images ride along as data
     // URIs and become `image_url` parts in the request envelope below.
     const userMsg: ChatMessage = {
@@ -875,6 +884,14 @@ export default function PlaygroundPage() {
     ].join('\n')
 
     try {
+      if (taskLookup && editor.workspace) {
+        const content = await lookupNextTask(editor.workspace, taskLookup, controller.signal)
+        controller.signal.throwIfAborted()
+        const answer: ChatMessage[] = [...newMessages, { role: 'assistant', content }]
+        setMessages(answer)
+        await persistConversation(answer)
+        return
+      }
       const headers: Record<string, string> = { 'Content-Type': 'application/json' }
       if (keyData?.apiKey) headers['Authorization'] = `Bearer ${keyData.apiKey}`
       const base = import.meta.env.BASE_URL.replace(/\/$/, '')
@@ -1278,7 +1295,20 @@ export default function PlaygroundPage() {
             addFiles([...e.dataTransfer.files])
           }}
         >
-          {editor.workspace && <p className="mb-2 truncate text-xs text-muted-foreground">Claude Text Editor · {editor.workspace.name} → {activeModelLabel}</p>}
+          {showTaskPicker && !editor.workspace && (
+            <div className="mb-2 space-y-2 rounded-lg border p-3" role="region">
+              <p role="status" className="text-sm">{nextTaskRequest(input.trim(), locale)?.vi
+                ? 'Chọn file checklist hoặc thư mục dự án, rồi gửi lại câu hỏi.'
+                : 'Select a checklist file or project folder, then send your question again.'}</p>
+              <WorkspaceControls workspace={null} onChange={selectWorkspace} disabled={loading} />
+            </div>
+          )}
+          {editor.workspace && <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
+            <span className="truncate">Claude Text Editor · {editor.workspace.name} → {activeModelLabel}</span>
+            <button type="button" className="shrink-0 rounded border px-1.5 py-0.5 font-mono hover:text-foreground"
+              disabled={loading || !!input.trim() || !!attachments.length}
+              onClick={() => { setInput('/next-task'); inputRef.current?.focus() }}>/next-task</button>
+          </div>}
           {attachments.length > 0 && (
             <div className="mb-2 flex flex-wrap gap-2">
               {attachments.map(a => (

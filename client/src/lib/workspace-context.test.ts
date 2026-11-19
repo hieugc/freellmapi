@@ -1,4 +1,5 @@
 import { expect, it } from 'vitest'
+import { lookupNextTask, nextTaskRequest } from './workspace-next-task'
 import { readWorkspaceContext } from './workspace-context'
 
 function file(name: string, content: string) {
@@ -38,4 +39,38 @@ it('reads the selected file again for every turn', async () => {
   expect(await readWorkspaceContext(handle, 'What does this say?', signal)).toEqual([{ path: 'note.txt', content: '1\tfirst' }])
   current = 'updated'
   expect((await readWorkspaceContext(handle, 'and now?', signal))[0].content).toBe('1\tupdated')
+})
+
+it('recognizes the reported lookup and leaves implementation or public documentation questions in chat', () => {
+  const text = 'Đọc checklist Spec-Kit. Task đầu tiên chưa hoàn thành là gì? Cho tôi mã task, đường dẫn và số dòng.'
+  expect(nextTaskRequest(text, 'en')).toEqual({ vi: true })
+  expect(nextTaskRequest('task tiếp theo của folder đó là gì?', 'vi')).toEqual({ vi: true })
+  expect(nextTaskRequest('/next-task docs/tasks/phase one.md', 'vi')).toEqual({ vi: true, path: 'docs/tasks/phase one.md' })
+  expect(nextTaskRequest('Implement the next task', 'en')).toBeNull()
+  expect(nextTaskRequest('Find the next task in the GitHub Spec Kit docs', 'en')).toBeNull()
+  expect(nextTaskRequest(text + ' Rồi thực hiện nó.', 'vi')).toBeNull()
+})
+
+it('returns the exact first unchecked row per local file and skips examples and closed tasks', async () => {
+  const data = ['# Phase', '```md', '- [ ] EXAMPLE', '```', '<!--', '- [ ] HIDDEN', '-->',
+    '- [X] T001 old', '  - [ ] T002 first real task', '- [ ] T003 later'].join('\n')
+  const root = directory('repo', [
+    directory('docs', [directory('tasks', [file('phase.md', data)])]),
+    directory('specs', [directory('001-app', [file('tasks.md', '- [ ] T004 Build')])]),
+    directory('templates', [file('checklist.md', '- [ ] template example')]),
+  ])
+  const all = await lookupNextTask(root, { vi: true }, signal)
+  expect(all).toContain('docs/tasks/phase.md:9')
+  expect(all).toContain('T002 first real task')
+  expect(all).toContain('specs/001-app/tasks.md:1')
+  expect(all).not.toMatch(/EXAMPLE|HIDDEN|T003|template example/)
+  const single = await lookupNextTask(root, { vi: true, path: 'docs/tasks/phase.md' }, signal)
+  expect(single).not.toContain('T004')
+  expect(await lookupNextTask(root, { vi: true, path: '../other.md' }, signal)).toContain('Lỗi đọc file')
+})
+
+it('reports an empty or completed checklist without inventing a task', async () => {
+  expect(await lookupNextTask(directory('empty', []), { vi: true }, signal)).toContain('Chưa tìm thấy checklist')
+  expect(await lookupNextTask(directory('done', [file('tasks.md', '- [x] T001')]), { vi: true }, signal))
+    .toContain('Chưa tìm thấy checkbox mở')
 })

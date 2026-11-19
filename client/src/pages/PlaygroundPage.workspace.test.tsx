@@ -64,13 +64,28 @@ it('selects a folder and saves a reviewed tool call to disk from the Playground 
     await act(async () => root.render(<QueryClientProvider client={queryClient}>
       <I18nProvider initialLocale="en"><PlaygroundPage /></I18nProvider>
     </QueryClientProvider>))
-    await act(async () => button('Folder').click())
     const input = container.querySelector<HTMLTextAreaElement>('[data-testid="liquid-composer"] textarea')!
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, 'Edit note.txt')
-      input.dispatchEvent(new Event('input', { bubbles: true }))
-    })
-    await act(async () => { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })) })
+    const submit = async (text: string) => {
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, text)
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+      await act(async () => { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })) })
+    }
+    await submit('/next-task note.txt')
+    expect(input.value).toBe('/next-task note.txt')
+    expect(container.textContent).toContain('Select a checklist file')
+    expect(fetch).not.toHaveBeenCalled()
+    const choose = [...container.querySelectorAll<HTMLButtonElement>('[role="region"] button')]
+      .find(b => b.textContent === 'Folder')!
+    await act(async () => choose.click())
+    await writeFile(path, '- [x] T001 ready\n- [ ] T002 local result')
+    await submit(input.value)
+    await vi.waitFor(() => expect(container.textContent).toContain('note.txt:2'))
+    expect(container.textContent).toContain('T002 local result')
+    expect(turns).toBe(0)
+    await writeFile(path, 'before')
+    await submit('Edit note.txt')
     await vi.waitFor(() => expect(button('Apply')).toBeTruthy())
     expect(document.querySelector('[role="dialog"]')?.textContent).toContain('+ after')
     expect(await readFile(path, 'utf8')).toBe('before')
