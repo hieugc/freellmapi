@@ -30,6 +30,7 @@ import {
 } from '@/lib/attachments'
 import { useWorkspaceEditor, WorkspaceControls, EditReview } from '@/components/playground/workspace-editor'
 import { EditDeclined, executeEditor } from '@/lib/workspace-editor'
+import { readWorkspaceContext } from '@/lib/workspace-context'
 import { workspaceCompletion } from '@/lib/workspace-chat'
 import { readChatStream } from '@/lib/playground-stream'
 import { ConversationSidebar } from '@/components/playground/conversation-sidebar'
@@ -276,7 +277,17 @@ export default function PlaygroundPage() {
   const [webSearch, setWebSearch] = useState<boolean>(
     () => localStorage.getItem('playground.webSearch') === '1',
   )
+  const [workspaceSearch, setWorkspaceSearch] = useState(false)
+  const selectWorkspace = (workspace: typeof editor.workspace) => {
+    setWorkspaceSearch(false)
+    editor.setWorkspace(workspace)
+  }
+  const searchRequested = editor.workspace ? workspaceSearch : webSearch
   const updateWebSearch = (enabled: boolean) => {
+    if (editor.workspace) {
+      setWorkspaceSearch(enabled)
+      return
+    }
     setWebSearch(enabled)
     localStorage.setItem('playground.webSearch', enabled ? '1' : '0')
   }
@@ -344,7 +355,7 @@ export default function PlaygroundPage() {
   const usableEngines = searchReadiness.readyEngines
   const webSearchAvailable = searchReadiness.available
   const webSearchUnavailableHint = searchReadinessHint(searchReadiness.data, searchReadiness.failed, searchReadiness.loading, t)
-  const webSearchOn = webSearch && webSearchAvailable
+  const webSearchOn = searchRequested && webSearchAvailable
   const transcriptionAvailable = hasTranscription(mediaModels)
   const shortcutHintKey = systemDictationHintKey(mediaData?.models)
   const dictationUnavailableHint = transcriptionAvailable ? undefined : t(shortcutHintKey ?? 'playground.dictationUnavailable')
@@ -559,7 +570,7 @@ export default function PlaygroundPage() {
   const resetConversationState = () => {
     abortRef.current?.abort()
     abortRef.current = null
-    editor.setWorkspace(null)
+    selectWorkspace(null)
     setLoading(false)
     conversationIdRef.current = null
     titleRef.current = ''
@@ -583,7 +594,7 @@ export default function PlaygroundPage() {
   const openConversation = async (id: number) => {
     abortRef.current?.abort()
     abortRef.current = null
-    editor.setWorkspace(null)
+    selectWorkspace(null)
     setLoading(false)
     const conversation = await getConversation(id)
     createRef.current = null
@@ -857,7 +868,11 @@ export default function PlaygroundPage() {
     const controller = new AbortController()
     abortRef.current = controller
     const savedPaths = new Set<string>()
-    const receipt = () => [...savedPaths].map(path => '✓ ' + path).join('\n')
+    const readPaths = new Set<string>()
+    const receipt = () => [
+      ...[...readPaths].map(path => '📖 ' + path),
+      ...[...savedPaths].map(path => '✓ ' + path),
+    ].join('\n')
 
     try {
       const headers: Record<string, string> = { 'Content-Type': 'application/json' }
@@ -920,18 +935,21 @@ export default function PlaygroundPage() {
         method: 'POST', headers, body: JSON.stringify(payload), signal: controller.signal,
       })
       const workspace = editor.workspace
+      const sources = workspace ? await readWorkspaceContext(workspace, text, controller.signal) : []
+      for (const source of sources) readPaths.add(source.path)
       const res = workspace
         ? await workspaceCompletion(body, workspace.name, controller.signal, send, async args => {
           try {
             const result = await executeEditor(workspace, args, editor.review, controller.signal)
-            if (args.command !== 'view') savedPaths.add(String(args.path))
+            if (args.command === 'view') readPaths.add(String(args.path))
+            else savedPaths.add(String(args.path))
             return result
           } catch (err) {
             controller.signal.throwIfAborted()
             if (err instanceof EditDeclined) throw err
             return 'Tool error: ' + (err instanceof Error ? err.message : String(err))
           }
-        })
+        }, sources)
         : await send(body)
       controller.signal.throwIfAborted()
 
@@ -1358,7 +1376,7 @@ export default function PlaygroundPage() {
         />
       ) : (
       <SettingsRail
-        workspaceControls={<WorkspaceControls workspace={editor.workspace} onChange={editor.setWorkspace} disabled={loading} />}
+        workspaceControls={<WorkspaceControls workspace={editor.workspace} onChange={selectWorkspace} disabled={loading} />}
         open={settingsOpen}
         onToggle={toggleSettings}
         modelValue={selectedModel}
@@ -1373,7 +1391,7 @@ export default function PlaygroundPage() {
         onSystemPromptChange={updateSystemPrompt}
         sampling={sampling}
         onSamplingChange={updateSampling}
-        webSearch={webSearch}
+        webSearch={searchRequested}
         onWebSearchChange={updateWebSearch}
         webSearchAvailable={webSearchAvailable}
         webSearchUnavailableHint={webSearchUnavailableHint}

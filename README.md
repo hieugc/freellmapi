@@ -302,6 +302,8 @@ Send a chat completion through the router and see which provider served it, with
 
 To edit files on your computer, open the Playground settings rail and use **Claude Text Editor → Files** for one file or **Folder** for a project. Use desktop Chrome or Edge on localhost or HTTPS. Pick a model that supports tool calling (or Auto). For example, ask “In README.md, change the heading from Installation to Local setup.” The browser sends requested file contents to the model through the router. Each proposed write shows a preview. **Apply** saves to the selected location, including an external drive. **Remove**, reloading, or switching conversations disconnects the selection.
 
+A selected folder supplies its root listing to the model. For task questions, the Playground also looks for task lists at the root and under `specs/*/tasks.md` and sends bounded excerpts with line numbers. The reply lists paths read (📖) and paths saved (✓). Web search starts off for each selection and can be enabled for that workspace in the composer.
+
 The Playground implements the Claude text editor commands `view`, `str_replace`, `insert`, and `create` for UTF-8 files up to 128 KB. It uses the existing chat gateway with an explicit tool schema. Docker needs no host-directory mount or Claude Code CLI installation for this feature.
 
 ![Playground page](repo-assets/playground.png)

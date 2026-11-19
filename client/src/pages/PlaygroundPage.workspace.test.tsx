@@ -19,6 +19,7 @@ it('selects a folder and saves a reviewed tool call to disk from the Playground 
   await writeFile(path, 'before')
   const folder = {
     kind: 'directory', name: 'project',
+    async *values() { yield { name: 'note.txt', kind: 'file' } },
     getFileHandle: async (name: string) => {
       expect(name).toBe('note.txt')
       return {
@@ -36,6 +37,10 @@ it('selects a folder and saves a reviewed tool call to disk from the Playground 
   }
   vi.stubGlobal('showDirectoryPicker', vi.fn().mockResolvedValue(folder))
   const queryClient = new QueryClient({ defaultOptions: { queries: { enabled: false } } })
+  localStorage.setItem('playground.webSearch', '1')
+  queryClient.setQueryData(['search-engines'], [{ engineId: 't', platform: 't', enabled: true, healthyKeyCount: 1 }])
+  queryClient.setQueryData(['search-status'], { engines: [{ engine: 't', platform: 't', state: 'ready' }],
+    status: 'ready', catalog: {}, missing_from_catalog: [] })
   const container = document.body.appendChild(document.createElement('div'))
   const root = createRoot(container)
   const button = (label: string) => [...document.querySelectorAll('button')].find(b => b.textContent === label)!
@@ -45,6 +50,7 @@ it('selects a folder and saves a reviewed tool call to disk from the Playground 
     expect(url).toBe('/v1/chat/completions')
     const body = JSON.parse(init.body as string)
     expect(body.stream).toBe(false)
+    if (turns === 0) expect(body.messages.at(-1)).toMatchObject({ role: 'tool', content: 'note.txt' })
     if (++turns === 1) return Response.json({ choices: [{ finish_reason: 'tool_calls', message: {
       role: 'assistant', content: null, tool_calls: [{ id: 'one', type: 'function', function: {
         name: body.tools[0].function.name,
@@ -70,7 +76,9 @@ it('selects a folder and saves a reviewed tool call to disk from the Playground 
     expect(await readFile(path, 'utf8')).toBe('before')
     await act(async () => button('Apply').click())
     await act(async () => { await vi.waitFor(() => expect(turns).toBe(2)) })
+    expect(container.textContent).toContain('📖 .')
     expect(container.textContent).toContain('✓ note.txt')
+    expect(vi.mocked(fetch).mock.calls.map(([url]) => url)).not.toContain('/v1/search')
     expect(await readFile(path, 'utf8')).toBe('after')
   } finally {
     act(() => root.unmount())
