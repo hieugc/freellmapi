@@ -74,6 +74,25 @@ export function couldBecomeDialectMarker(text: string): boolean {
   return DIALECT_MARKERS.some(m => m.startsWith(t) && t.length < m.length);
 }
 
+/** Probe only the first property so normal Markdown and JSON can stream immediately. */
+export function namedToolJsonPrefix(text: string): 'partial' | 'matched' | 'other' {
+  let prefix = text.trimStart();
+  if (prefix.startsWith('`')) {
+    if ('```'.startsWith(prefix) && prefix.length < 3) return 'partial';
+    if (!prefix.startsWith('```')) return 'other';
+    prefix = prefix.slice(3);
+    if (prefix.startsWith('json')) prefix = prefix.slice(4);
+    else if ('json'.startsWith(prefix)) return 'partial';
+    prefix = prefix.trimStart();
+  }
+  if (!prefix) return 'partial';
+  if (!prefix.startsWith('{')) return 'other';
+  const key = prefix.slice(1).trimStart();
+  const keys = ['"name"', '"arguments"', '"parameters"'];
+  if (keys.some(k => key.startsWith(k))) return 'matched';
+  return keys.some(k => k.startsWith(key)) ? 'partial' : 'other';
+}
+
 /** Anywhere-in-text detection for the non-streaming path. */
 export function containsDialectMarker(text: string): boolean {
   return DIALECT_MARKERS.some(m => text.includes(m));
@@ -306,15 +325,13 @@ export function rescueInlineToolCalls(text: string, toolNames: Set<string>): Res
 
   // Dialect 4: the entire answer is one JSON object naming a known tool —
   // either bare or inside a ```json fence. Strictly schema-gated.
+  const call = parseNamedToolJson(text, toolNames);
+  return call ? { detected: true, calls: [call], cleanText: '' } : { detected: false, calls: null, cleanText: text };
+}
+
+export function parseNamedToolJson(text: string, toolNames: Set<string>): RescuedToolCall | null {
   const trimmed = text.trim();
   const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/.exec(trimmed);
   const candidate = (fenced ? fenced[1] : trimmed).trim();
-  if (candidate.startsWith('{') && candidate.endsWith('}')) {
-    const call = callFromNamedJson(candidate, toolNames);
-    // Only treat as dialect when it actually names a requested tool;
-    // arbitrary JSON answers must pass through untouched.
-    if (call) return { detected: true, calls: [call], cleanText: '' };
-  }
-
-  return { detected: false, calls: null, cleanText: text };
+  return candidate.startsWith('{') && candidate.endsWith('}') ? callFromNamedJson(candidate, toolNames) : null;
 }

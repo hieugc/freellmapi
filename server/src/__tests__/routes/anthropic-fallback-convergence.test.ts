@@ -171,6 +171,57 @@ describe('/v1/messages shared-loop convergence', () => {
     expect(text).not.toContain('<function=');
   });
 
+  describe('multiline content from a provider', () => {
+    const source = 'first line\r\nconst re = /\\n/;\nlast line';
+    const write = { name: 'Write', input_schema: { type: 'object', properties: { content: { type: 'string' } } } };
+    const inline = JSON.stringify({ name: 'Write', arguments: { content: source } });
+    const requestBody = { model: 'claude-sonnet-4-5', max_tokens: 256, messages: [{ role: 'user', content: 'write a file' }], tools: [write] };
+
+    async function streamText(value: string, finish: string, overrides = {}) {
+      mockRouteRequest.mockReturnValue(fakeRoute(streamProvider(async function* () {
+        for (const char of value) yield chunk({ content: char });
+        yield chunk({}, finish);
+      })));
+      const response = await post(app, { ...requestBody, stream: true, ...overrides }, key);
+      expect(response.status).toBe(200);
+      return sseEvents(response.text);
+    }
+
+    it('returns the original string in non-streaming Write input', async () => {
+      mockRouteRequest.mockReturnValue(fakeRoute(jsonProvider({
+        choices: [{ message: { role: 'assistant', content: inline }, finish_reason: 'tool_calls' }],
+      })));
+      const { status, body } = await post(app, requestBody, key);
+      expect(status).toBe(200);
+      expect(body.content).toEqual([expect.objectContaining({ type: 'tool_use', name: 'Write', input: { content: source } })]);
+    });
+
+    it.each([
+      [inline, 'tool_calls', {}],
+      ['```json\n' + inline + '\n```', 'stop', { tool_choice: { type: 'tool', name: 'Write' } }],
+    ] as const)('streams serialized Write input as one tool block (%#)', async (value, finish, overrides) => {
+      const events = await streamText(value, finish, overrides);
+      const blocks = events.filter(e => e.event === 'content_block_start').map(e => e.data.content_block);
+      expect(blocks).toEqual([expect.objectContaining({ type: 'tool_use', name: 'Write' })]);
+      const payload = events.filter(e => e.data.delta?.type === 'input_json_delta').map(e => e.data.delta.partial_json).join('');
+      expect(JSON.parse(payload)).toEqual({ content: source });
+      expect(events.find(e => e.event === 'message_delta')?.data.delta.stop_reason).toBe('tool_use');
+    });
+
+    it.each([
+      [source, {}],
+      ['```json\n' + inline + '\n```', {}],
+      [inline, { tool_choice: { type: 'none' } }],
+      [inline, { tools: [] }],
+      [inline, { tool_choice: { type: 'tool', name: 'Read' }, tools: [write, { ...write, name: 'Read' }] }],
+      ['{"name":"Other","arguments":{}}', { tool_choice: { type: 'any' } }],
+    ] as const)('preserves text exactly when it is not a requested tool call (%#)', async (value, overrides) => {
+      const events = await streamText(value, 'stop', overrides);
+      expect(events.filter(e => e.event === 'content_block_start').map(e => e.data.content_block.type)).toEqual(['text']);
+      expect(events.filter(e => e.data.delta?.type === 'text_delta').map(e => e.data.delta.text).join('')).toBe(value);
+    });
+  });
+
   it('non-stream: rescues a <dots_function_call> block into a typed tool_use (#1949)', async () => {
     const dots = '<dots_function_call>\n  <invoke name="get_weather">\n    <parameter name="city">Paris</parameter>\n    <parameter name="days">3</parameter>\n  </invoke>\n</dots_function_call>';
     mockRouteRequest.mockReturnValue(fakeRoute(jsonProvider({

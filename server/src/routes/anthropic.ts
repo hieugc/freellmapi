@@ -17,7 +17,7 @@ import { routeOutputBudget } from '../lib/output-cap.js';
 import { resolveTaskType } from '../lib/task-type.js';
 import { repairToolArguments, toolSchemaMap } from '../lib/tool-args.js';
 import { invalidToolArgumentsError, invalidToolCallReasons, isToolArgumentValidationEnabled } from '../lib/tool-validate.js';
-import { rescueInlineToolCalls, startsWithDialectMarker, couldBecomeDialectMarker, containsDialectMarker } from '../lib/tool-call-rescue.js';
+import { rescueInlineToolCalls, startsWithDialectMarker, couldBecomeDialectMarker, containsDialectMarker, namedToolJsonPrefix, parseNamedToolJson } from '../lib/tool-call-rescue.js';
 import { sanitizeProviderErrorMessage } from '../lib/error-redaction.js';
 import { convertDocumentBlock, documentRejectionMessage } from '../lib/anthropic-documents.js';
 import { isClientAbortError, newClientAbortError, newHedgeAbortError, isUpstreamClassificationOutput } from '../lib/error-classify.js';
@@ -943,7 +943,11 @@ async function streamCompletion(
   // first MEANINGFUL content, so a stream that opens with a dialect marker and
   // then turns out unparseable fails over invisibly (previously this surface
   // committed on the first non-empty text and had no dialect rescue at all).
-  let dialectMode: 'undecided' | 'passthrough' | 'dialect' = 'undecided';
+  const toolChoice: ChatToolChoice | undefined = options.tool_choice;
+  const requestedName = typeof toolChoice === 'object' ? toolChoice.function.name : undefined;
+  const toolNames = new Set((ctx.tools ?? []).map(t => t.function.name).filter(n => !requestedName || n === requestedName));
+  const canRescue = toolChoice !== 'none' && toolNames.size > 0;
+  let dialectMode: 'undecided' | 'passthrough' | 'dialect' | 'json' = canRescue ? 'undecided' : 'passthrough';
   let heldText = '';
 
   const ensureMessageStart = () => {
@@ -1090,15 +1094,23 @@ async function streamCompletion(
         heldText += text;
         if (dialectMode === 'undecided') {
           const probe = heldText.trimStart();
-          if (startsWithDialectMarker(probe)) {
+          const jsonPrefix = namedToolJsonPrefix(probe);
+          if (jsonPrefix === 'matched') {
+            dialectMode = 'json';
+          } else if (startsWithDialectMarker(probe)) {
             dialectMode = 'dialect';
-          } else if (!couldBecomeDialectMarker(probe) || heldText.length > 256) {
+          } else if ((!couldBecomeDialectMarker(probe) && jsonPrefix === 'other') || heldText.length > 256) {
             dialectMode = 'passthrough';
             emitText(heldText);
             heldText = '';
           }
         }
-        // else: still a strict prefix of a marker — keep holding.
+        // An auto-mode JSON example may be large. Bound speculative buffering.
+        if (dialectMode === 'json' && !requestedName && toolChoice !== 'required' && heldText.length > 256 * 1024) {
+          dialectMode = 'passthrough';
+          emitText(heldText);
+          heldText = '';
+        }
       }
     }
 
@@ -1121,9 +1133,17 @@ async function streamCompletion(
     // committed). A rescued dialect becomes tool_use blocks; leftover clean text
     // is emitted as a text block first.
     if (heldText.length > 0) {
-      const rescue = ((ctx.tools?.length ?? 0) > 0 && (dialectMode === 'dialect' || containsDialectMarker(heldText)))
-        ? rescueInlineToolCalls(heldText, new Set((ctx.tools ?? []).map(t => t.function.name)))
-        : { detected: false as const, calls: null, cleanText: heldText };
+      let rescue: ReturnType<typeof rescueInlineToolCalls> = { detected: false, calls: null, cleanText: heldText };
+      if (dialectMode === 'json') {
+        // JSON examples are valid answers. Only interpret one as a call when
+        // the request required a tool or the provider ended the turn with one.
+        if (toolAcc.size === 0 && (requestedName || toolChoice === 'required' || upstreamFinish === 'tool_calls')) {
+          const call = parseNamedToolJson(heldText, toolNames);
+          if (call) rescue = { detected: true, calls: [call], cleanText: '' };
+        }
+      } else if (canRescue && (dialectMode === 'dialect' || containsDialectMarker(heldText))) {
+        rescue = rescueInlineToolCalls(heldText, toolNames);
+      }
       if (rescue.detected && !rescue.calls) {
         throw new Error(`unparseable inline tool-call dialect from ${route.displayName}: ${heldText.slice(0, 120)}`);
       }
