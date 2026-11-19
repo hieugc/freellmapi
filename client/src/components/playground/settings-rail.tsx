@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { ChevronsLeft, ChevronsRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
@@ -40,6 +41,7 @@ const LAYER =
   'absolute inset-y-0 end-0 flex flex-col transition-[opacity,visibility] duration-200 ease-out motion-reduce:transition-none'
 
 export interface SettingsRailProps {
+  workspaceControls?: ReactNode
   open: boolean
   onToggle: () => void
   /** Model picker, moved here from the page header. */
@@ -140,6 +142,7 @@ function SamplingControlRow({
 }
 
 export function SettingsRail({
+  workspaceControls,
   open,
   onToggle,
   modelValue,
@@ -207,6 +210,7 @@ export function SettingsRail({
         </div>
 
         <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-3">
+          {workspaceControls}
           <div className="space-y-1.5">
             <span className="block text-xs font-medium">{t('common.model')}</span>
             <ModelCombobox

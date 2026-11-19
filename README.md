@@ -300,6 +300,10 @@ Manage provider credentials and grab the unified API key your apps connect with.
 
 Send a chat completion through the router and see which provider served it, with the model ID and latency printed right on the message. Attach files by button, drag-and-drop, or paste: images (PNG/JPEG/WebP/GIF) are downscaled in the browser and sent as image content parts to a vision-capable model, and text files (TXT/MD/CSV/JSON/LOG) are inlined into the prompt as fenced blocks.
 
+To edit files on your computer, open the Playground settings rail and use **Claude Text Editor → Files** for one file or **Folder** for a project. Use desktop Chrome or Edge on localhost or HTTPS. Pick a model that supports tool calling (or Auto). For example, ask “In README.md, change the heading from Installation to Local setup.” The browser sends requested file contents to the model through the router. Each proposed write shows a preview. **Apply** saves to the selected location, including an external drive. **Remove**, reloading, or switching conversations disconnects the selection.
+
+The Playground implements the Claude text editor commands `view`, `str_replace`, `insert`, and `create` for UTF-8 files up to 128 KB. It uses the existing chat gateway with an explicit tool schema. Docker needs no host-directory mount or Claude Code CLI installation for this feature.
+
 ![Playground page](repo-assets/playground.png)
 
 ### Analytics

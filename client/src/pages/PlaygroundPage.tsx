@@ -28,6 +28,9 @@ import {
   toMessageContent,
   type Attachment,
 } from '@/lib/attachments'
+import { useWorkspaceEditor, WorkspaceControls, EditReview } from '@/components/playground/workspace-editor'
+import { EditDeclined, executeEditor } from '@/lib/workspace-editor'
+import { workspaceCompletion } from '@/lib/workspace-chat'
 import { readChatStream } from '@/lib/playground-stream'
 import { ConversationSidebar } from '@/components/playground/conversation-sidebar'
 import { SettingsRail } from '@/components/playground/settings-rail'
@@ -244,6 +247,7 @@ function systemDictationHintKey(models: TranscriptionModelRow[] | undefined) {
 }
 
 export default function PlaygroundPage() {
+  const editor = useWorkspaceEditor()
   const { t } = useI18n()
   const [messages, setMessages] = useState<ChatMessage[]>([])
   // Optional system prompt for this Playground session. Client-side only:
@@ -555,6 +559,8 @@ export default function PlaygroundPage() {
   const resetConversationState = () => {
     abortRef.current?.abort()
     abortRef.current = null
+    editor.setWorkspace(null)
+    setLoading(false)
     conversationIdRef.current = null
     titleRef.current = ''
     createRef.current = null
@@ -577,6 +583,8 @@ export default function PlaygroundPage() {
   const openConversation = async (id: number) => {
     abortRef.current?.abort()
     abortRef.current = null
+    editor.setWorkspace(null)
+    setLoading(false)
     const conversation = await getConversation(id)
     createRef.current = null
     setMessages(conversation.messages)
@@ -845,6 +853,11 @@ export default function PlaygroundPage() {
     // Not awaited: the create runs alongside the completion, and every save
     // below waits on the same memoised promise.
     void conversationIdFor(newMessages)
+    abortRef.current?.abort()
+    const controller = new AbortController()
+    abortRef.current = controller
+    const savedPaths = new Set<string>()
+    const receipt = () => [...savedPaths].map(path => '✓ ' + path).join('\n')
 
     try {
       const headers: Record<string, string> = { 'Content-Type': 'application/json' }
@@ -862,6 +875,7 @@ export default function PlaygroundPage() {
             method: 'POST',
             headers,
             body: JSON.stringify({ query: text, max_results: 5 }),
+            signal: controller.signal,
           })
           if (!res.ok) {
             const err = await res.json().catch(() => ({ error: { message: `HTTP ${res.status}` } }))
@@ -877,6 +891,7 @@ export default function PlaygroundPage() {
             }
           }
         } catch (err) {
+          controller.signal.throwIfAborted()
           toast.error(t('search.playgroundFailed', { reason: err instanceof Error ? err.message : String(err) }))
         }
       }
@@ -900,17 +915,25 @@ export default function PlaygroundPage() {
       // of after a silent minute.
       body.stream = true
 
-      abortRef.current?.abort()
-      const controller = new AbortController()
-      abortRef.current = controller
-
       const start = Date.now()
-      const res = await fetch(`${base}/v1/chat/completions`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(body),
-        signal: controller.signal,
+      const send = (payload: object) => fetch(`${base}/v1/chat/completions`, {
+        method: 'POST', headers, body: JSON.stringify(payload), signal: controller.signal,
       })
+      const workspace = editor.workspace
+      const res = workspace
+        ? await workspaceCompletion(body, workspace.name, controller.signal, send, async args => {
+          try {
+            const result = await executeEditor(workspace, args, editor.review, controller.signal)
+            if (args.command !== 'view') savedPaths.add(String(args.path))
+            return result
+          } catch (err) {
+            controller.signal.throwIfAborted()
+            if (err instanceof EditDeclined) throw err
+            return 'Tool error: ' + (err instanceof Error ? err.message : String(err))
+          }
+        })
+        : await send(body)
+      controller.signal.throwIfAborted()
 
       const latency = Date.now() - start
       const routedVia = res.headers.get('X-Routed-Via')
@@ -923,14 +946,14 @@ export default function PlaygroundPage() {
         const failed: ChatMessage[] = [...newMessages, {
           role: 'assistant',
           isError: true,
-          content: err.error?.message ?? t('common.unknownError'),
+          content: [err.error?.message ?? t('common.unknownError'), receipt()].filter(Boolean).join('\n\n'),
         }]
         setMessages(failed)
         await persistConversation(failed)
         return
       }
 
-      if (isFusion && res.body) {
+      if (isFusion && !workspace && res.body) {
         await streamFusion(res.body, newMessages, start)
         return
       }
@@ -945,7 +968,9 @@ export default function PlaygroundPage() {
       }
 
       const data = await res.json()
-      const content = data.choices?.[0]?.message?.content ?? JSON.stringify(data, null, 2)
+      controller.signal.throwIfAborted()
+      const answer = data.choices?.[0]?.message?.content ?? JSON.stringify(data, null, 2)
+      const content = [answer, receipt()].filter(Boolean).join('\n\n')
       const via = data._routed_via ?? (routedVia ? {
         platform: routedVia.split('/')[0],
         model: routedVia.split('/').slice(1).join('/'),
@@ -977,17 +1002,19 @@ export default function PlaygroundPage() {
       // Clearing the chat (or leaving the page) aborts the stream on purpose —
       // that is not a failure to report, and the transcript it belonged to is
       // already gone.
-      if (err?.name === 'AbortError') return
+      if (controller.signal.aborted || err?.name === 'AbortError') return
       const failed: ChatMessage[] = [...newMessages, {
         role: 'assistant',
         isError: true,
-        content: err.message,
+        content: [err.message, receipt()].filter(Boolean).join('\n\n'),
       }]
       setMessages(failed)
       await persistConversation(failed)
     } finally {
-      setLoading(false)
-      setTimeout(() => inputRef.current?.focus(), 0)
+      if (abortRef.current === controller) {
+        setLoading(false)
+        setTimeout(() => inputRef.current?.focus(), 0)
+      }
     }
   }
 
@@ -1233,6 +1260,7 @@ export default function PlaygroundPage() {
             addFiles([...e.dataTransfer.files])
           }}
         >
+          {editor.workspace && <p className="mb-2 truncate text-xs text-muted-foreground">Claude Text Editor · {editor.workspace.name} → {activeModelLabel}</p>}
           {attachments.length > 0 && (
             <div className="mb-2 flex flex-wrap gap-2">
               {attachments.map(a => (
@@ -1318,6 +1346,7 @@ export default function PlaygroundPage() {
           plain `textarea` selector reaches for. */}
       {/* The artifact panel takes the rail's column while something is open;
           closing it brings the settings rail back as it was. */}
+      <EditReview pending={editor.pending} workspace={editor.workspace} />
       {artifact ? (
         <ArtifactPanel
           artifact={artifact}
@@ -1329,6 +1358,7 @@ export default function PlaygroundPage() {
         />
       ) : (
       <SettingsRail
+        workspaceControls={<WorkspaceControls workspace={editor.workspace} onChange={editor.setWorkspace} disabled={loading} />}
         open={settingsOpen}
         onToggle={toggleSettings}
         modelValue={selectedModel}
